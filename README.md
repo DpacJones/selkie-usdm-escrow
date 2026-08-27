@@ -2,6 +2,8 @@
 
 **A private USDM escrow, built on [Midnight](https://midnight.network).**
 
+This project is built on the Midnight Network.
+
 A selkie leaves its sealskin on the shore, and whoever holds the skin holds the claim. Selkie escrows work the same way: a depositor locks USDM behind a commitment, and whoever can prove knowledge of the matching secret takes the funds. There is no allowlist, no signature check, and no identity anywhere in the claim path .. **possession of the secret is the authorization, and the secret itself never touches the chain.**
 
 The USDM being escrowed is the same USDM that moves natively between Cardano and Midnight through [VIA Labs](https://vialabs.io) cross-chain messaging. Bridge it over, escrow it here, hand someone a secret.
