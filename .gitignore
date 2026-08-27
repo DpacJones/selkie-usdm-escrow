@@ -1,0 +1,11 @@
+node_modules/
+
+# secrets .. wallet mnemonics live here
+.env
+
+# midnight wallet state + private state caches
+wallet-state*.json
+*.levelDb/
+level-db/
+midnight-level-db/
+.selkie-private-state/

@@ -1,0 +1,25 @@
+{
+  "name": "@selkie/contract",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "description": "Selkie .. private USDM escrow circuit for Midnight (Compact).",
+  "scripts": {
+    "compact": "compact compile +0.30.0 --skip-zk src/selkie.compact managed/selkie",
+    "compact:zk": "compact compile +0.30.0 src/selkie.compact managed/selkie",
+    "format": "compact format src/selkie.compact",
+    "test": "node --test test/selkie.test.ts",
+    "typecheck": "tsc -p ."
+  },
+  "dependencies": {
+    "@midnight-ntwrk/compact-runtime": "0.15.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "^5.6.3"
+  },
+  "engines": {
+    "node": ">=24.11.1"
+  }
+}

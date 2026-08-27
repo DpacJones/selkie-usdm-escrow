@@ -1,0 +1,224 @@
+// Selkie .. private USDM escrow for Midnight.
+//
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Dennis Zarelli (Atlantis)
+//
+// A selkie leaves its sealskin on the shore; whoever holds the skin holds the
+// claim. Selkie escrows work the same way: a depositor locks USDM behind a
+// commitment, and whoever can prove knowledge of the matching secret takes the
+// funds. No identity, no allowlist, no signature .. possession of the secret IS
+// the authorization, and the secret itself never touches the chain.
+//
+// What is actually private
+// ------------------------
+// ONLY the claim and refund secrets. The escrowed asset is an UNSHIELDED token,
+// so the depositor's funding input and the payee's receiving output are both
+// transparent, and `amount`, `escrow_id`, `refund_commitment` and `settled_to`
+// are all public ledger state. An observer can reconstruct who paid whom, how
+// much, and when. The property this contract provides is possession-based
+// authorization with no identity registry .. NOT payment privacy. Amount and
+// counterparty privacy would need shielded tokens and a nullifier set, which is
+// a different contract.
+//
+// Design notes
+// ------------
+// * Both tickets are `persistentCommit(<frame>, secret)` with the secret in the
+//   opening slot. The hiding property therefore rests ENTIRELY on the secret's
+//   entropy .. there is no other non-constant input. A low-entropy or unset
+//   secret yields a publicly computable ticket and the escrow becomes a bearer
+//   instrument. The witness layer enforces 32 non-zero bytes; see witnesses.ts.
+// * Because persistentCommit clears witness taint, the compiler's disclosure
+//   checker is not watching secret-derived values in this file. That is why no
+//   `disclose()` appears on any of them. Any future edit that puts a
+//   secret-derived value on the ledger will compile SILENTLY .. review by hand.
+// * Distinct tags ("selkie:claim:v1" vs "selkie:refund:v1") mean a refund secret
+//   can never be replayed as a claim secret, or vice versa.
+// * The escrow id IS the claim ticket. The map entry is retained after
+//   settlement with a terminal status rather than deleted, so the entry itself
+//   acts as the nullifier .. an id can never be re-created or re-claimed. No
+//   separate nullifier set is required.
+// * Cancel is authorized by a second commitment, not by ownPublicKey(). A
+//   witness-supplied public key is untrusted input and proves nothing.
+// * KNOWN GAP: cancel has no deadline, and newSelkieTicket() hands the depositor
+//   both secrets. A depositor can therefore claim their own escrow, or race a
+//   cancel against the payee's in-flight claim. Selkie gives the payee no
+//   settlement guarantee. Closing this needs a claim window and a payee-bound
+//   claim key .. see README.
+
+pragma language_version >= 0.22;
+
+import CompactStandardLibrary;
+
+export enum EscrowStatus {
+  // Slot 0 is the default value for the type. Keeping it as an explicit
+  // `nonexistent` variant means a zeroed struct can never be mistaken for a
+  // live, claimable escrow.
+  nonexistent,
+  open,
+  claimed,
+  cancelled
+}
+
+export struct Escrow {
+  // Amount of the escrowed unshielded token, in that token's base units.
+  amount: Uint<128>,
+  // persistentCommit([tag, escrow_id], refund_secret) .. the cancel authority.
+  refund_commitment: Bytes<32>,
+  status: EscrowStatus,
+  // Raw bytes of the UserAddress the funds were released to. Zero while open.
+  settled_to: Bytes<32>
+}
+
+// The unshielded token this instance escrows, fixed at deployment. On Midnight
+// Preview the USDM color minted by the VIA Labs bridge is
+// 003bacd9a361ba0d425e408776020e40271375e8b8de42d73eec046a44947d73.
+export sealed ledger token_color: Bytes<32>;
+
+// escrow_id (== claim ticket) -> escrow record.
+export ledger escrows: Map<Bytes<32>, Escrow>;
+
+// Lifetime counters, for indexers and the DApp dashboard.
+export ledger opened_count: Counter;
+
+export ledger settled_count: Counter;
+
+// ---------------------------------------------------------------------------
+// Witnesses .. supplied locally by the prover, never sent to the chain.
+// ---------------------------------------------------------------------------
+
+// 32 bytes of entropy that unlock the escrow. Whoever holds this can claim.
+witness selkie_claim_secret(): Bytes<32>;
+
+// 32 bytes of entropy held only by the depositor, used to cancel.
+witness selkie_refund_secret(): Bytes<32>;
+
+// ---------------------------------------------------------------------------
+
+constructor(usdm_color: Bytes<32>) {
+  // The all-zero color is nativeToken() (NIGHT). A deployment that forgets to
+  // pass the USDM color would otherwise silently escrow the wrong asset, and
+  // the field is sealed, so the mistake would be permanent.
+  assert(disclose(usdm_color) != default<Bytes<32>>, "selkie: token color must be non-zero");
+  token_color = disclose(usdm_color);
+}
+
+// Domain-separated hiding commitment to the claim secret.
+circuit claim_ticket(secret: Bytes<32>): Bytes<32> {
+  return persistentCommit<Bytes<32>>(pad(32, "selkie:claim:v1"), secret);
+}
+
+// Domain-separated hiding commitment to the refund secret, BOUND to the escrow
+// it authorizes. Binding the id matters: without it, a depositor who reuses one
+// refund secret across escrows publishes an identical 32-byte constant each
+// time, which clusters those escrows as theirs and turns a single leaked secret
+// into a kill-switch for all of them.
+circuit refund_ticket(id: Bytes<32>, secret: Bytes<32>): Bytes<32> {
+  return persistentCommit<Vector<2, Bytes<32>>>([pad(32, "selkie:refund:v1"), id], secret);
+}
+
+// Lock `amount` of the escrowed token behind a freshly generated claim secret.
+//
+// Public:  the amount, and the resulting escrow id.
+// Private: both secrets. The id is a hiding commitment, so publishing it says
+//          nothing about the secret behind it.
+//
+// The commitments are computed in-circuit from the witnesses rather than passed
+// in as arguments, so the on-chain framing can never drift from what the DApp
+// hashed off-chain.
+export circuit create_escrow(amount: Uint<128>): Bytes<32> {
+  const amt = disclose(amount);
+  assert(amt > 0, "selkie: amount must be positive");
+
+  const id = claim_ticket(selkie_claim_secret());
+  assert(!escrows.member(id), "selkie: escrow id already used");
+
+  // Pull the depositor's tokens into the contract. The ledger refuses to apply
+  // the transaction unless it is balanced by a matching unshielded input, so a
+  // recorded escrow is always a funded escrow.
+  receiveUnshielded(token_color, amt);
+
+  escrows.insert(
+    id,
+    Escrow { amount: amt,
+             refund_commitment: refund_ticket(id, selkie_refund_secret()),
+             status: EscrowStatus.open,
+             settled_to: default<Bytes<32>> }
+    );
+  opened_count.increment(1);
+
+  return id;
+}
+
+// Release an open escrow to `payout`, proving knowledge of the claim secret.
+//
+// Public:  the escrow id, the payout address, the fact that a valid secret was
+//          presented.
+// Private: the secret itself.
+//
+// There is no identity check by design. `payout` is a public circuit input, so
+// it is bound into the proof: a mempool observer cannot re-point a claim at
+// their own address without a proof they cannot produce.
+export circuit claim(escrow_id: Bytes<32>, payout: Bytes<32>): [] {
+  const id = disclose(escrow_id);
+  const to = disclose(payout);
+
+  // A zero address burns the funds, and the escrow is marked terminally settled
+  // in the same transaction, so there is no second attempt.
+  assert(to != default<Bytes<32>>, "selkie: payout address must be non-zero");
+
+  assert(escrows.member(id), "selkie: unknown escrow");
+  const e = escrows.lookup(id);
+  assert(e.status == EscrowStatus.open, "selkie: escrow is not open");
+
+  // The whole authorization. Equality against the public id proves the prover
+  // holds a preimage of the commitment without revealing it.
+  assert(claim_ticket(selkie_claim_secret()) == id, "selkie: invalid claim secret");
+
+  escrows.insert(
+    id,
+    Escrow { amount: e.amount,
+             refund_commitment: e.refund_commitment,
+             status: EscrowStatus.claimed,
+             settled_to: to }
+    );
+  settled_count.increment(1);
+
+  sendUnshielded(
+    token_color,
+    e.amount,
+    right<ContractAddress, UserAddress>(UserAddress { bytes: to })
+    );
+}
+
+// Reclaim an unclaimed escrow to `refund_to`, proving knowledge of the refund
+// secret. Authorization is the refund commitment, not a public key .. a
+// witness-supplied identity would be attacker-controlled and prove nothing.
+export circuit cancel(escrow_id: Bytes<32>, refund_to: Bytes<32>): [] {
+  const id = disclose(escrow_id);
+  const to = disclose(refund_to);
+
+  assert(to != default<Bytes<32>>, "selkie: refund address must be non-zero");
+
+  assert(escrows.member(id), "selkie: unknown escrow");
+  const e = escrows.lookup(id);
+  assert(e.status == EscrowStatus.open, "selkie: escrow is not open");
+
+  assert(refund_ticket(id, selkie_refund_secret()) == e.refund_commitment,
+         "selkie: invalid refund secret"
+         );
+
+  escrows.insert(
+    id,
+    Escrow { amount: e.amount,
+             refund_commitment: e.refund_commitment,
+             status: EscrowStatus.cancelled,
+             settled_to: to }
+    );
+  settled_count.increment(1);
+
+  sendUnshielded(
+    token_color,
+    e.amount,
+    right<ContractAddress, UserAddress>(UserAddress { bytes: to })
+    );
+}

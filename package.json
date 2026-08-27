@@ -1,0 +1,41 @@
+{
+  "name": "selkie-usdm-escrow",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "description": "Selkie .. a private USDM escrow DApp on Midnight. Whoever proves knowledge of the secret takes the funds.",
+  "//": "contract/ is a workspace so the Compact runtime and the on-chain WASM runtime resolve to ONE hoisted copy. Two copies means two WASM class identities, and the SDK rejects objects across the boundary (`expected instance of ContractMaintenanceAuthority`).",
+  "workspaces": [
+    "contract"
+  ],
+  "scripts": {
+    "selkie": "node selkie.mjs",
+    "test": "npm test --prefix contract",
+    "build:contract": "npm run compact:zk --prefix contract"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "@midnight-ntwrk/compact-js": "2.5.0",
+    "@midnight-ntwrk/compact-runtime": "0.15.0",
+    "@midnight-ntwrk/ledger-v8": "8.0.3",
+    "@midnight-ntwrk/midnight-js-contracts": "4.0.4",
+    "@midnight-ntwrk/midnight-js-http-client-proof-provider": "4.0.4",
+    "@midnight-ntwrk/midnight-js-indexer-public-data-provider": "4.0.4",
+    "@midnight-ntwrk/midnight-js-level-private-state-provider": "4.0.4",
+    "@midnight-ntwrk/midnight-js-network-id": "4.0.4",
+    "@midnight-ntwrk/midnight-js-node-zk-config-provider": "4.0.4",
+    "@midnight-ntwrk/midnight-js-types": "4.0.4",
+    "@midnight-ntwrk/wallet-sdk-address-format": "3.1.0",
+    "@midnight-ntwrk/wallet-sdk-dust-wallet": "3.0.0",
+    "@midnight-ntwrk/wallet-sdk-facade": "3.0.0",
+    "@midnight-ntwrk/wallet-sdk-hd": "3.0.1",
+    "@midnight-ntwrk/wallet-sdk-shielded": "2.1.0",
+    "@midnight-ntwrk/wallet-sdk-unshielded-wallet": "2.1.0",
+    "@scure/bip39": "^2.0.0",
+    "dotenv": "^17.4.2",
+    "rxjs": "^7.8.2"
+  }
+}
